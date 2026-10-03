@@ -1,0 +1,120 @@
+name: Zapret Release Checker
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+jobs:
+  check-release:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check latest Zapret release
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+          from pathlib import Path
+
+          API_URL = "https://api.github.com/repos/Flowseal/zapret-discord-youtube/releases/latest"
+          STATE_FILE = Path("last_release.txt")
+
+          request = urllib.request.Request(
+              API_URL,
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "User-Agent": "zapret-release-checker"
+              }
+          )
+
+          with urllib.request.urlopen(request) as response:
+              release = json.load(response)
+
+          tag = release["tag_name"]
+          name = release.get("name") or tag
+          url = release["html_url"]
+          body = release.get("body") or "Описание изменений отсутствует."
+          author = release["author"]["login"]
+
+          print(f"Последняя версия: {tag}")
+
+          # Первый запуск: просто запоминаем текущую версию
+          # и НЕ отправляем сообщение в Discord.
+          if not STATE_FILE.exists():
+              STATE_FILE.write_text(tag)
+              print(f"Запомнили текущую версию {tag}. Уведомление не отправляем.")
+              exit(0)
+
+          old_tag = STATE_FILE.read_text().strip()
+
+          if old_tag == tag:
+              print("Новой версии нет.")
+              exit(0)
+
+          print(f"Найдена новая версия: {old_tag} -> {tag}")
+
+          if len(body) > 3900:
+              body = body[:3900] + "\n..."
+
+          payload = {
+              "username": "Zapret Updates",
+              "embeds": [
+                  {
+                      "title": f"🚀 Новая версия Zapret: {tag}",
+                      "url": url,
+                      "description": body,
+                      "color": 5793266,
+                      "fields": [
+                          {
+                              "name": "Версия",
+                              "value": f"`{tag}`",
+                              "inline": True
+                          },
+                          {
+                              "name": "Автор",
+                              "value": f"`{author}`",
+                              "inline": True
+                          }
+                      ],
+                      "footer": {
+                          "text": "Flowseal / zapret-discord-youtube"
+                      }
+                  }
+              ]
+          }
+
+          data = json.dumps(payload).encode("utf-8")
+
+          discord_request = urllib.request.Request(
+              os.environ["DISCORD_WEBHOOK"],
+              data=data,
+              headers={
+                  "Content-Type": "application/json"
+              },
+              method="POST"
+          )
+
+          with urllib.request.urlopen(discord_request) as response:
+              print("Discord response:", response.status)
+
+          STATE_FILE.write_text(tag)
+          PY
+
+      - name: Save release version
+        run: |
+          git config user.name "github-actions"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add last_release.txt
+          git commit -m "Update last Zapret release" || true
+          git push
